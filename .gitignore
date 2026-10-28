@@ -1,0 +1,23 @@
+# Node.js
+node_modules/
+dist/
+out/
+
+# Rust / Tauri
+src-tauri/target/
+*.pdb
+*.dll
+
+# Secrets & Sensitive Data
+.env
+accounts.json
+*.key
+*.pem
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
