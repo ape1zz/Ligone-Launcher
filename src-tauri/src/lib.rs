@@ -2,6 +2,7 @@ mod auth;
 mod content;
 mod downloader;
 mod fabric;
+mod forge;
 mod instances;
 mod jre;
 mod launch;
@@ -46,6 +47,7 @@ pub fn run() {
             instances::instance_open_folder,
             mcmeta::version_list,
             fabric::fabric_loader_versions,
+            forge::forge_loader_versions,
             downloader::instance_download,
             downloader::instance_cancel_download,
             jre::java_status,

@@ -804,6 +804,45 @@ body::before {
   cursor: not-allowed;
 }
 
+/* Forge segment wrapper: hosts the hover tooltip shown over a blocked
+   button (native title/tooltips do not fire on disabled buttons). */
+.instcreate__loaderwrap {
+  position: relative;
+  display: flex;
+  flex: 1;
+}
+
+.instcreate__loaderhint {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 240px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--text);
+  background: var(--chip-bg-strong, var(--chip-bg));
+  border: 1px solid var(--chip-border);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.35);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(-50%) translateY(4px);
+  transition: opacity 0.12s ease, transform 0.12s ease, visibility 0.12s;
+  pointer-events: none;
+  z-index: 30;
+}
+
+.instcreate__loaderwrap[data-blocked="true"]:hover .instcreate__loaderhint,
+.instcreate__loaderwrap[data-blocked="true"]:focus-within .instcreate__loaderhint {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+
 .settings__ram {
   display: flex;
   align-items: center;

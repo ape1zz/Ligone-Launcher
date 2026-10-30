@@ -221,9 +221,14 @@ pub(crate) fn current_account(app: &AppHandle) -> Result<Account, AuthError> {
         .ok_or_else(|| AuthError::oauth("нет активного аккаунта"))
 }
 
-/// Refreshes an Ely.by access token when it is expired or about to expire;
-/// persists the new tokens and updates the current session. Offline accounts
-/// pass through untouched.
+/// Refreshes an Ely.by access token before launch; persists the new tokens
+/// and updates the current session. Offline accounts pass through untouched.
+///
+/// The token kind decides the path (same rules as `auth_ely_refresh`):
+/// OAuth sessions refresh only when expired; legacy password sessions
+/// (`clientToken`, no known TTL) refresh on every launch on a best-effort
+/// basis — a failing refresh never blocks the launch, the game falls back
+/// to the stored token.
 pub(crate) fn refresh_ely_if_expired(
     app: &AppHandle,
     account: &Account,
@@ -231,18 +236,129 @@ pub(crate) fn refresh_ely_if_expired(
     let Some(ely) = &account.ely else {
         return Ok(account.clone());
     };
-    let refresh_token = ely
-        .refresh_token
-        .as_deref()
-        .ok_or_else(|| AuthError::oauth("сессия требует повторного входа"))?;
     let now = now_millis()?;
-    let expired = ely
-        .access_token_expires_at
-        .is_some_and(|expires_at| expires_at <= now + 60_000);
-    if !expired {
-        return Ok(account.clone());
+    match refresh_plan(ely, now)? {
+        SessionPlan::Hold => Ok(account.clone()),
+        SessionPlan::OAuth { refresh_token } => {
+            let session = ely::refresh_session(&refresh_token)?;
+            let state = app.state::<AuthState>();
+            finish_ely_login(app, &state, session)
+        }
+        SessionPlan::Legacy { access_token, client_token } => {
+            match ely::refresh_legacy_session(&access_token, &client_token) {
+                Ok(session) => {
+                    let state = app.state::<AuthState>();
+                    finish_ely_login(app, &state, session)
+                }
+                Err(_) => Ok(account.clone()),
+            }
+        }
     }
-    let session = ely::refresh_session(refresh_token)?;
-    let state = app.state::<AuthState>();
-    finish_ely_login(app, &state, session)
+}
+
+/// What to do with an Ely session before launching the game. Pure helper so
+/// the launch-path token rules stay unit-testable.
+#[derive(Debug)]
+enum SessionPlan {
+    Hold,
+    OAuth {
+        refresh_token: String,
+    },
+    Legacy {
+        access_token: String,
+        client_token: String,
+    },
+}
+
+fn refresh_plan(ely: &crate::auth::model::ElyAccount, now_millis: u64) -> Result<SessionPlan, AuthError> {
+    // OAuth sessions (refreshToken) refresh only when expired or about to.
+    if let Some(refresh_token) = &ely.refresh_token {
+        let expired = ely
+            .access_token_expires_at
+            .is_some_and(|expires_at| expires_at <= now_millis + 60_000);
+        return Ok(if expired {
+            SessionPlan::OAuth {
+                refresh_token: refresh_token.clone(),
+            }
+        } else {
+            SessionPlan::Hold
+        });
+    }
+    // Legacy password sessions: unknown TTL, refresh best-effort every time.
+    if let Some(client_token) = &ely.client_token {
+        return Ok(SessionPlan::Legacy {
+            access_token: ely.access_token.clone(),
+            client_token: client_token.clone(),
+        });
+    }
+    Err(AuthError::oauth(
+        "сессия требует повторного входа; войдите через Ely.by заново",
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SessionPlan, refresh_plan};
+    use crate::auth::model::{AuthError, ElyAccount};
+
+    const NOW: u64 = 1_000_000;
+
+    fn ely(
+        access_token: &str,
+        refresh_token: Option<&str>,
+        client_token: Option<&str>,
+        expires_at: Option<u64>,
+    ) -> ElyAccount {
+        ElyAccount {
+            access_token: access_token.to_owned(),
+            refresh_token: refresh_token.map(str::to_owned),
+            client_token: client_token.map(str::to_owned),
+            access_token_expires_at: expires_at,
+        }
+    }
+
+    #[test]
+    fn oauth_session_holds_until_expiring() {
+        // Exactly 60s left is already treated as "about to expire".
+        let plan = refresh_plan(&ely("at", Some("rt"), None, Some(NOW + 60_001)), NOW).unwrap();
+        assert!(matches!(plan, SessionPlan::Hold));
+    }
+
+    #[test]
+    fn oauth_session_refreshes_when_expiring_soon() {
+        let plan = refresh_plan(&ely("at", Some("rt"), None, Some(NOW + 59_999)), NOW).unwrap();
+        assert!(matches!(plan, SessionPlan::OAuth { .. }));
+    }
+
+    #[test]
+    fn oauth_session_without_expiry_count_is_valid() {
+        // No known TTL: can't tell staleness, keep the stored token.
+        let plan = refresh_plan(&ely("at", Some("rt"), None, None), NOW).unwrap();
+        assert!(matches!(plan, SessionPlan::Hold));
+    }
+
+    #[test]
+    fn legacy_session_always_refreshes() {
+        let plan = refresh_plan(&ely("at", None, Some("ct"), Some(0)), NOW).unwrap();
+        assert!(matches!(
+            plan,
+            SessionPlan::Legacy { access_token, client_token } if access_token == "at" && client_token == "ct"
+        ));
+    }
+
+    #[test]
+    fn legacy_session_without_both_tokens_errors() {
+        let error = refresh_plan(&ely("", None, None, None), NOW).unwrap_err();
+        assert!(
+            matches!(error, AuthError::OAuth { .. }),
+            "expected OAuth, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn legacy_refresh_takes_precedence_over_expiry() {
+        // Legacy sessions have no client-side TTL; expires_at, if any, is decoration.
+        let plan = refresh_plan(&ely("at", None, Some("ct"), None), NOW).unwrap();
+        assert!(matches!(plan, SessionPlan::Legacy { .. }));
+    }
 }

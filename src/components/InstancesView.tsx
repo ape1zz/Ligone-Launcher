@@ -267,9 +267,11 @@ export default function InstancesView() {
                   {instance.versionId}
                   {instance.loader === "fabric" && instance.loaderVersion
                     ? ` · Fabric ${instance.loaderVersion}`
-                    : instance.loader === "vanilla"
-                      ? ` · ${t("instances.badge_vanilla")}`
-                      : ""}
+                    : instance.loader === "forge" && instance.loaderVersion
+                      ? ` · Forge ${instance.loaderVersion}`
+                      : instance.loader === "vanilla"
+                        ? ` · ${t("instances.badge_vanilla")}`
+                        : ""}
                 </p>
                 {progress !== undefined ? (
                   <div className="instcard__progress-wrap">
@@ -285,7 +287,9 @@ export default function InstancesView() {
                         ? t("instances.stage_jar")
                         : progress.stage === "libraries"
                           ? t("instances.stage_libraries")
-                          : t("instances.stage_assets")}
+                          : progress.stage === "forge"
+                            ? t("instances.stage_forge")
+                            : t("instances.stage_assets")}
                     </p>
                   </div>
                 ) : (

@@ -122,9 +122,11 @@ export default function InstanceSettingsModal({
             {instance.versionId}
             {instance.loader === "fabric" && instance.loaderVersion
               ? ` · Fabric ${instance.loaderVersion}`
-              : instance.loader === "vanilla"
-                ? ` · ${t("instances.badge_vanilla")}`
-                : ""}
+              : instance.loader === "forge" && instance.loaderVersion
+                ? ` · Forge ${instance.loaderVersion}`
+                : instance.loader === "vanilla"
+                  ? ` · ${t("instances.badge_vanilla")}`
+                  : ""}
           </p>
         </div>
 

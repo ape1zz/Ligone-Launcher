@@ -280,21 +280,32 @@ struct ModrinthDependency {
     dependency_type: Option<String>,
 }
 
+/// Modrinth facet query: outer groups are AND'd, inner ones OR'd, so every
+/// filter must live in its own group — a single mixed group would be an OR
+/// and would match any project regardless of type or version.
+fn modrinth_facets_json(
+    game_version: &str,
+    project_type: &str,
+    loader: Option<&str>,
+) -> Result<String, ContentError> {
+    let mut facets = vec![
+        vec![format!("versions:{game_version}")],
+        vec![format!("project_type:{project_type}")],
+    ];
+    if let Some(loader) = loader {
+        facets.push(vec![format!("categories:{loader}")]);
+    }
+    serde_json::to_string(&facets)
+        .map_err(|error| ContentError::storage(error.to_string()))
+}
+
 fn modrinth_search(
     query: &str,
     category: ContentCategory,
     game_version: &str,
     loader: Option<&str>,
 ) -> Result<Vec<ContentItem>, ContentError> {
-    let mut facets = vec![
-        format!("versions:{game_version}"),
-        format!("project_type:{}", category.modrinth_project_type()),
-    ];
-    if let Some(loader) = loader {
-        facets.push(format!("categories:{loader}"));
-    }
-    let facets_json = serde_json::to_string(&vec![facets])
-        .map_err(|error| ContentError::storage(error.to_string()))?;
+    let facets_json = modrinth_facets_json(game_version, category.modrinth_project_type(), loader)?;
     let url = format!(
         "{MODRINTH_API_BASE}/search?limit=20&index=downloads&query={query}&facets={facets}",
         query = url_encode(query),
@@ -601,13 +612,17 @@ fn category_dir(home: &Path, instance: &Instance, category: ContentCategory) -> 
     .join(category.dir_name())
 }
 
-/// Loader facet for content search: mods on Fabric instances are filtered by
-/// the `fabric` loader; everything else searches without a loader facet.
+/// Loader facet for content search: mods on loader instances are filtered by
+/// the matching loader (`fabric`/`forge`); everything else searches without
+/// a loader facet.
 fn loader_filter(instance: &Instance, category: ContentCategory) -> Option<&'static str> {
-    if category == ContentCategory::Mods && instance.loader == Loader::Fabric {
-        Some("fabric")
-    } else {
-        None
+    if category != ContentCategory::Mods {
+        return None;
+    }
+    match instance.loader {
+        Loader::Fabric => Some("fabric"),
+        Loader::Forge => Some("forge"),
+        Loader::Vanilla => None,
     }
 }
 
@@ -727,7 +742,8 @@ fn install(
     let instance = load_instance(app, instance_id)?;
     let dir = category_dir(&home, &instance, category);
     fs::create_dir_all(&dir)?;
-    let loader = loader_filter(&instance, ContentCategory::Mods);
+    // Dependency resolution shares the category's loader filter (mods only).
+    let loader = loader_filter(&instance, category);
     let game_version = instance.version_id.clone();
     let mut visited = HashSet::new();
     let mut installed = Vec::new();
@@ -1082,6 +1098,41 @@ mod tests {
         assert_eq!(ContentCategory::Mods.dir_name(), "mods");
         assert_eq!(ContentCategory::Resourcepacks.dir_name(), "resourcepacks");
         assert_eq!(ContentCategory::Shaderpacks.dir_name(), "shaderpacks");
+    }
+
+    /// Only mod searches/installs are scoped by the instance loader; packs and
+    /// shaders must stay unfiltered regardless of the instance loader.
+    #[test]
+    fn loader_filter_applies_only_to_mods() {
+        use crate::instances::{Instance, Loader};
+        let fabric = Instance {
+            id: "abc".to_owned(),
+            name: "test".to_owned(),
+            version_id: "1.20.1".to_owned(),
+            loader: Loader::Fabric,
+            loader_version: Some("0.14.21".to_owned()),
+            created_at: 0,
+            downloaded: true,
+            java_component: None,
+            java_major: None,
+        };
+        assert_eq!(loader_filter(&fabric, ContentCategory::Mods), Some("fabric"));
+        assert_eq!(loader_filter(&fabric, ContentCategory::Resourcepacks), None);
+        assert_eq!(loader_filter(&fabric, ContentCategory::Shaderpacks), None);
+    }
+
+    #[test]
+    fn modrinth_facets_are_separate_and_groups() {
+        let facets = modrinth_facets_json("1.20.1", "mod", Some("fabric")).unwrap();
+        assert_eq!(
+            facets,
+            r#"[["versions:1.20.1"],["project_type:mod"],["categories:fabric"]]"#
+        );
+        let no_loader = modrinth_facets_json("1.20.1", "resourcepack", None).unwrap();
+        assert_eq!(
+            no_loader,
+            r#"[["versions:1.20.1"],["project_type:resourcepack"]]"#
+        );
     }
 
     #[test]

@@ -21,7 +21,12 @@ const AUTHENTICATE_PATH: &str = "/auth/authenticate";
 const AUTHSERVER_REFRESH_PATH: &str = "/auth/refresh";
 const SCOPES: &str = "account_info offline_access minecraft_server_session";
 const CALLBACK_BIND_PORT: u16 = 8921;
-const DEFAULT_REDIRECT_URI: &str = "http://localhost:1420/ely/callback";
+/// Browser-facing redirect for dev: the Vite dev server proxies
+/// `/ely/callback` to the local callback server (port `CALLBACK_BIND_PORT`).
+const DEV_REDIRECT_URI: &str = "http://localhost:1420/ely/callback";
+/// Release builds have no dev server; the callback server binds 8921 itself
+/// and this URI must be registered in the Ely.by application settings.
+const RELEASE_REDIRECT_URI: &str = "http://localhost:8921/ely/callback";
 const CALLBACK_TIMEOUT_SECS: u64 = 120;
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -65,8 +70,12 @@ fn cleaned_env(name: &str) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
-/// OAuth client credentials come exclusively from the environment
-/// (`.env` in the launcher home or parent process variables).
+/// OAuth client credentials shipped with the build so Ely.by login works
+/// without any user setup. Environment variables (`.env` in the launcher
+/// home or parent process) override them for testing or private deployments.
+const EMBEDDED_CLIENT_ID: &str = "ligone-launcher";
+const EMBEDDED_CLIENT_SECRET: &str = "_5kil2bQBgFlt_feN1VsdTX_NlW_RleQBcuY9tR8hisYoJRSS0kOX5pr92x0Sfeh";
+
 pub(crate) fn credentials() -> Result<(String, String), AuthError> {
     require_credentials(
         cleaned_env("ELYBY_CLIENT_ID").as_deref(),
@@ -74,30 +83,47 @@ pub(crate) fn credentials() -> Result<(String, String), AuthError> {
     )
 }
 
-/// Pure helper so tests can exercise the "not configured" path
+/// Pure helper so tests can exercise credential handling
 /// without touching process-wide environment variables.
 pub(crate) fn require_credentials(
     client_id: Option<&str>,
     client_secret: Option<&str>,
 ) -> Result<(String, String), AuthError> {
-    let client_id = client_id.unwrap_or_default().trim().to_owned();
-    let client_secret = client_secret.unwrap_or_default().trim().to_owned();
+    let client_id = client_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(EMBEDDED_CLIENT_ID);
+    let client_secret = client_secret
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(EMBEDDED_CLIENT_SECRET);
     if client_id.is_empty() || client_secret.is_empty() {
         return Err(AuthError::oauth(
-            "Ely.by OAuth не настроен: задайте ELYBY_CLIENT_ID и ELYBY_CLIENT_SECRET в .env (домашняя папка лаунчера) или в переменных окружения",
+            "Ely.by OAuth не настроен: учётные данные приложения отсутствуют",
         ));
     }
-    Ok((client_id, client_secret))
+    Ok((client_id.to_owned(), client_secret.to_owned()))
 }
 
 pub(crate) fn redirect_uri() -> String {
     std::env::var("ELYBY_REDIRECT_URI")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_REDIRECT_URI.to_owned())
+        .unwrap_or_else(|| {
+            if cfg!(debug_assertions) {
+                DEV_REDIRECT_URI
+            } else {
+                RELEASE_REDIRECT_URI
+            }
+            .to_owned()
+        })
 }
 
 pub(crate) fn callback_bind_port() -> u16 {
+    if cfg!(debug_assertions) {
+        // Dev: the Vite proxy terminates `/ely/callback` and forwards here.
+        return CALLBACK_BIND_PORT;
+    }
     redirect_uri()
         .split("//")
         .nth(1)
@@ -565,7 +591,6 @@ mod tests {
         authorize_url, handle_stream, parse_query, percent_decode, redirect_uri, require_credentials,
         url_encode,
     };
-    use crate::auth::model::AuthError;
 
     /// Other unit tests never read these variables, so a one-time global set
     /// is safe for the parallel test runner.
@@ -674,19 +699,31 @@ mod tests {
     }
 
     #[test]
-    fn require_credentials_rejects_missing_or_blank() {
-        assert!(matches!(
-            require_credentials(None, Some("secret")),
-            Err(AuthError::OAuth { .. })
-        ));
-        assert!(matches!(
-            require_credentials(Some("id"), Some("  ")),
-            Err(AuthError::OAuth { .. })
-        ));
-        assert!(matches!(
-            require_credentials(Some(""), None),
-            Err(AuthError::OAuth { .. })
-        ));
+    fn require_credentials_falls_back_to_embedded() {
+        assert_eq!(
+            require_credentials(None, None).unwrap(),
+            (
+                super::EMBEDDED_CLIENT_ID.to_owned(),
+                super::EMBEDDED_CLIENT_SECRET.to_owned()
+            )
+        );
+        assert_eq!(
+            require_credentials(None, Some("  ")).unwrap(),
+            (super::EMBEDDED_CLIENT_ID.to_owned(), super::EMBEDDED_CLIENT_SECRET.to_owned())
+        );
+    }
+
+    #[test]
+    fn redirect_uri_follows_build_profile() {
+        // No ELYBY_REDIRECT_URI in the test process; dev builds expect the
+        // Vite proxy, release builds the directly bound callback server.
+        assert!(redirect_uri().contains("/ely/callback"));
+        if cfg!(debug_assertions) {
+            assert!(redirect_uri().contains("localhost:1420"));
+            assert_eq!(super::callback_bind_port(), super::CALLBACK_BIND_PORT);
+        } else {
+            assert!(redirect_uri().contains("localhost:8921"));
+        }
     }
 
     #[test]

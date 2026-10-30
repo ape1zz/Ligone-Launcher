@@ -391,9 +391,7 @@ mod tests {
         use std::collections::HashMap;
         use std::sync::{LazyLock, Mutex};
 
-        use keyring::credential::{
-            Credential, CredentialApi, CredentialBuilder, CredentialBuilderApi,
-        };
+        use keyring::credential::{Credential, CredentialApi, CredentialBuilderApi};
         use keyring::error::{Error, Result};
 
         type Key = (String, String);

@@ -98,6 +98,7 @@ fn launch(app: &AppHandle, id: &str) -> Result<u32, InstanceError> {
     let version_bytes = downloader::fetch_version_json_cached(app, &instance.version_id)?;
     let version_json = downloader::parse_version_json(&version_bytes)?;
     let fabric_profile = load_fabric_profile(&dir, &instance)?;
+    let forge_profile = load_forge_profile(&home, &dir, &instance)?;
 
     let account = auth::current_account(app)
         .map_err(|error| InstanceError::launch(error.to_string()))?;
@@ -109,14 +110,35 @@ fn launch(app: &AppHandle, id: &str) -> Result<u32, InstanceError> {
 
     let natives_dir = dir.join("natives");
     extract_natives(&home, &version_json, &natives_dir)?;
-    let classpath = build_classpath(&home, &version_json, fabric_profile.as_ref(), &instance);
+    let classpath = build_classpath(
+        &home,
+        &version_json,
+        fabric_profile.as_ref(),
+        forge_profile.as_ref(),
+        &instance,
+    );
     let authlib_jar = ensure_authlib_injector(&home)?;
-    let values = substitution_values(&home, &dir, &instance, &account, &version_json, &classpath);
+    let mut values = substitution_values(&home, &dir, &instance, &account, &version_json, &classpath);
+    // Forge JVM args reference the merged version id (`-DignoreList` etc.),
+    // not the vanilla one underlying the overridden profile.
+    if instance.loader == Loader::Forge {
+        if let Some(build) = instance
+            .loader_version
+            .as_deref()
+            .filter(|build| !build.is_empty())
+        {
+            values.insert(
+                "version_name",
+                format!("{}-forge-{}", instance.version_id, build),
+            );
+        }
+    }
 
-    let main_class = main_class(&version_json, fabric_profile.as_ref())?;
+    let main_class = main_class(&version_json, fabric_profile.as_ref(), forge_profile.as_ref())?;
     let jvm = build_jvm_args(
         &version_json,
         fabric_profile.as_ref(),
+        forge_profile.as_ref(),
         &values,
         settings.ram_min_mb,
         settings.ram_max_mb,
@@ -124,7 +146,12 @@ fn launch(app: &AppHandle, id: &str) -> Result<u32, InstanceError> {
         &classpath,
         &authlib_jar,
     );
-    let game = build_game_args(&version_json, fabric_profile.as_ref(), &values);
+    let game = build_game_args(
+        &version_json,
+        fabric_profile.as_ref(),
+        forge_profile.as_ref(),
+        &values,
+    );
 
     append_log_line(&dir, &format!("=== запуск {} ({}) ===", instance.name, instance.version_id));
 
@@ -164,7 +191,13 @@ fn launch(app: &AppHandle, id: &str) -> Result<u32, InstanceError> {
 fn main_class(
     version_json: &VersionJson,
     fabric_profile: Option<&FabricProfile>,
+    forge_profile: Option<&VersionJson>,
 ) -> Result<String, InstanceError> {
+    if let Some(forge) = forge_profile {
+        if let Some(main_class) = &forge.main_class {
+            return Ok(main_class.clone());
+        }
+    }
     if let Some(profile) = fabric_profile {
         return Ok(profile.main_class.clone());
     }
@@ -172,6 +205,31 @@ fn main_class(
         .main_class
         .clone()
         .ok_or_else(|| InstanceError::launch("в описании версии нет mainClass"))
+}
+
+fn load_forge_profile(
+    home: &Path,
+    dir: &Path,
+    instance: &Instance,
+) -> Result<Option<VersionJson>, InstanceError> {
+    if instance.loader != Loader::Forge {
+        return Ok(None);
+    }
+    let bytes = match fs::read(dir.join("forge.json")) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            let build = instance
+                .loader_version
+                .as_deref()
+                .ok_or_else(|| InstanceError::launch("не указана версия Forge"))?;
+            crate::forge::cached_profile(home, &instance.version_id, build).ok_or_else(|| {
+                InstanceError::launch(
+                    "сборка Forge не установлена — запустите скачивание сборки ещё раз",
+                )
+            })?
+        }
+    };
+    downloader::parse_version_json(&bytes).map(Some)
 }
 
 fn load_fabric_profile(
@@ -335,6 +393,7 @@ fn push_entry(args: &mut Vec<String>, entry: &downloader::ArgEntry, values: &BTr
 fn build_jvm_args(
     version_json: &VersionJson,
     fabric_profile: Option<&FabricProfile>,
+    forge_profile: Option<&VersionJson>,
     values: &BTreeMap<&'static str, String>,
     ram_min_mb: u32,
     ram_max_mb: u32,
@@ -349,6 +408,13 @@ fn build_jvm_args(
     if let Some(arguments) = &version_json.arguments {
         for entry in &arguments.jvm {
             push_entry(&mut args, entry, values);
+        }
+    }
+    if let Some(overlay) = forge_profile {
+        if let Some(arguments) = &overlay.arguments {
+            for entry in &arguments.jvm {
+                push_entry(&mut args, entry, values);
+            }
         }
     }
     if let Some(profile) = fabric_profile {
@@ -381,6 +447,7 @@ fn build_jvm_args(
 fn build_game_args(
     version_json: &VersionJson,
     fabric_profile: Option<&FabricProfile>,
+    forge_profile: Option<&VersionJson>,
     values: &BTreeMap<&'static str, String>,
 ) -> Vec<String> {
     let mut args = Vec::new();
@@ -394,6 +461,13 @@ fn build_game_args(
                 .split_whitespace()
                 .map(|arg| substitute(arg, values)),
         );
+    }
+    if let Some(overlay) = forge_profile {
+        if let Some(arguments) = &overlay.arguments {
+            for entry in &arguments.game {
+                push_entry(&mut args, entry, values);
+            }
+        }
     }
     if let Some(profile) = fabric_profile {
         if let Some(arguments) = &profile.arguments {
@@ -409,6 +483,7 @@ fn build_classpath(
     home: &Path,
     version_json: &VersionJson,
     fabric_profile: Option<&FabricProfile>,
+    forge_profile: Option<&VersionJson>,
     instance: &Instance,
 ) -> String {
     let mut entries = vec![home
@@ -418,6 +493,13 @@ fn build_classpath(
     for plan in downloader::library_plans(version_json, home) {
         if !plan.natives {
             entries.push(plan.dest);
+        }
+    }
+    if let Some(overlay) = forge_profile {
+        for plan in downloader::library_plans(overlay, home) {
+            if !plan.natives {
+                entries.push(plan.dest);
+            }
         }
     }
     if let Some(profile) = fabric_profile {
@@ -666,7 +748,7 @@ mod tests {
     fn build_game_args_modern_filters_rules() {
         let json: VersionJson = serde_json::from_str(MODERN_JSON).unwrap();
         let values = BTreeMap::new();
-        let args = build_game_args(&json, None, &values);
+        let args = build_game_args(&json, None, None, &values);
         assert!(args.contains(&"--username ${auth_player_name}".to_string()));
         assert!(!args.contains(&"--linux-only".to_string()));
         assert!(args.contains(&"--demo".to_string()));
@@ -678,7 +760,7 @@ mod tests {
         let mut values = BTreeMap::new();
         values.insert("auth_player_name", "Steve".to_string());
         values.insert("game_directory", "C:\\game".to_string());
-        let args = build_game_args(&json, None, &values);
+        let args = build_game_args(&json, None, None, &values);
         assert_eq!(
             args,
             vec![
@@ -699,6 +781,7 @@ mod tests {
         values.insert("classpath", "C:\\cp".to_string());
         let args = build_jvm_args(
             &json,
+            None,
             None,
             &values,
             1024,
@@ -723,6 +806,7 @@ mod tests {
         let values = BTreeMap::new();
         let args = build_jvm_args(
             &json,
+            None,
             None,
             &values,
             1024,
@@ -840,7 +924,7 @@ mod tests {
         let json: VersionJson = serde_json::from_str(LEGACY_JSON).unwrap();
         let home = Path::new("H");
         let instance = sample_instance();
-        let classpath = build_classpath(home, &json, None, &instance);
+        let classpath = build_classpath(home, &json, None, None, &instance);
         assert!(classpath.starts_with("H\\versions\\1.20.1\\1.20.1.jar"));
     }
 }

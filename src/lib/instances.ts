@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { TranslateFn } from "./i18n";
 
-export type Loader = "vanilla" | "fabric";
+export type Loader = "vanilla" | "fabric" | "forge";
 
 export interface Instance {
   id: string;
@@ -101,6 +101,11 @@ export interface FabricLoaderVersion {
   stable: boolean;
 }
 
+export interface ForgeLoaderVersion {
+  version: string;
+  recommended: boolean;
+}
+
 export interface DownloadProgress {
   instanceId: string;
   stage: "jar" | "libraries" | "assets" | string;
@@ -134,6 +139,7 @@ export interface InstancesService {
   runningIds(): Promise<string[]>;
   versions(): Promise<VersionInfo[]>;
   fabricLoaderVersions(gameVersion: string): Promise<FabricLoaderVersion[]>;
+  forgeLoaderVersions(gameVersion: string): Promise<ForgeLoaderVersion[]>;
   openFolder(id: string, sub?: string | null): Promise<void>;
 }
 
@@ -155,6 +161,8 @@ export const instances: InstancesService = {
   versions: () => invoke("version_list"),
   fabricLoaderVersions: (gameVersion) =>
     invoke("fabric_loader_versions", { gameVersion }),
+  forgeLoaderVersions: (gameVersion) =>
+    invoke("forge_loader_versions", { gameVersion }),
   openFolder: (id, sub = null) => invoke("instance_open_folder", { id, sub }),
 };
 

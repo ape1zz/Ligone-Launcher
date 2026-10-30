@@ -6,15 +6,15 @@
 
 ## Скачать
 
-Готовые сборки (EXE и установщики) — на вкладке **Releases** этого репозитория. Скачайте архив, распакуйте и запустите `ligone-launcher.exe`. Для входа через Ely.by останется только настройка учётных данных (см. [ниже](#настройка-elyby-обязательно-для-oauthпарольного-входа)).
+Готовые сборки (EXE и установщики) — на вкладке **Releases** этого репозитория. Скачайте архив, распакуйте и запустите `Ligone Launcher.exe`. Вход через Ely.by работает из коробки, без настройки (см. [ниже](#вход-через-elyby)).
 
 Разделы ниже — для тех, кто хочет собрать лаунчер вручную из исходного кода.
 
 ## Возможности
 
 - **Аккаунты**: офлайн-вход (UUID как `nameUUIDFromBytes` в Java) и Ely.by — OAuth (рекомендуемый способ) и запасной вход по паролю. Аккаунты сохраняются между запусками; токены Ely.by хранятся в OS keyring (Windows Credential Manager), в файлах на диске секретов нет.
-- **Инстансы**: создание, переименование, удаление; скачивание выбранной версии Minecraft и Fabric (jar, библиотеки, ассеты) с проверкой по sha1 — повторные скачивания пропускают валидные файлы. У каждого инстанса свои `mods/`, `resourcepacks/`, `shaderpacks/`, `saves/`.
-- **Браузер контента**: поиск и установка модов/ресурспаков с Modrinth и CurseForge (всегда отфильтровано по версии игры; для модов на Fabric — по загрузчику). Зависимости модов ставятся автоматически. CurseForge используется при наличии `CURSEFORGE_API_KEY`, иначе — только Modrinth.
+- **Инстансы**: создание, переименование, удаление; скачивание выбранной версии Minecraft с vanilla / Fabric / Forge (jar, библиотеки, ассеты) с проверкой по sha1 — повторные скачивания пропускают валидные файлы. Forge ставится через официальный установщик (доступен для релизов 1.13+; для новых годовых версий 26.1+ Forge не существует — о чём лаунчер предупреждает при создании инстанса). У каждого инстанса свои `mods/`, `resourcepacks/`, `shaderpacks/`, `saves/`.
+- **Браузер контента**: поиск и установка модов/ресурспаков/шейдерпаков с Modrinth и CurseForge (всегда отфильтровано по версии игры; для модов — ещё и по загрузчику Fabric/Forge). Зависимости модов ставятся автоматически. CurseForge требует `CURSEFORGE_API_KEY`: поиск без ключа отдаёт только Modrinth.
 - **Java**: автоматический подбор нужной версии — пользовательский путь → рантайм Mojang (скачивается без UAC/MSI) → системная Java.
 - **Запуск игры**: JVM-аргументы, распаковка нативных библиотек, authlib-injector (скины по нику работают и офлайн). Лог игры пишется в `<инстанс>/launcher.log`, при аварийном выходе ошибка показывается в UI.
 - **Интерфейс**: тёмная/светлая тема, русский и английский языки.
@@ -43,9 +43,9 @@ npm run tauri build
 
 | Файл | Что это |
 | --- | --- |
-| `src-tauri/target/release/ligone-launcher.exe` | готовый портативный EXE |
-| `src-tauri/target/release/bundle/nsis/ligone-launcher_0.1.0_x64-setup.exe` | установщик (NSIS) |
-| `src-tauri/target/release/bundle/msi/ligone-launcher_0.1.0_x64_en-US.msi` | установщик (MSI) |
+| `src-tauri/target/release/Ligone Launcher.exe` | готовый портативный EXE |
+| `src-tauri/target/release/bundle/nsis/Ligone Launcher_0.1.0_x64-setup.exe` | установщик (NSIS) |
+| `src-tauri/target/release/bundle/msi/Ligone Launcher_0.1.0_x64_en-US.msi` | установщик (MSI) |
 
 Нужен только EXE без установщиков:
 
@@ -55,8 +55,8 @@ npm run tauri build -- --no-bundle
 
 Важные отличия release-сборки от dev:
 
-- **Redirect URI для OAuth**: в dev браузер попадает на `http://localhost:1420/ely/callback` через прокси Vite; в release прокси нет, поэтому в приложении Ely.by должен быть зарегистрирован `http://localhost:8921/ely/callback`, и перед запуском EXE задайте переменную окружения `ELYBY_REDIRECT_URI=http://localhost:8921/ely/callback` (или пропишите этот URI в приложении Ely.by и переменной).
-- **Учётные данные Ely.by** по-прежнему читаются из `%APPDATA%\.ligone\.env` или переменных окружения — положите `.env` рядом с данными лаунчера, рядом с EXE они не нужны.
+- **Redirect URI для OAuth** выбирается автоматически: в dev браузер попадает на `http://localhost:1420/ely/callback` через прокси Vite (в приложении Ely.by должен быть зарегистрирован и этот URI); в release прокси нет — callback-сервер лаунчера сам биндит порт 8921, и браузер попадает на `http://localhost:8921/ely/callback`. Ничего задавать переменными не нужно (при желании можно переопределить значением `ELYBY_REDIRECT_URI`).
+- **Учётные данные Ely.by** (clientId/clientSecret) вшиты в сборку, поэтому вход работает сразу после установки — настраивать ничего не нужно.
 - Консоль в release-сборке скрыта (`windows_subsystem = "windows"`); лог игры — в `<инстанс>/launcher.log`.
 
 ## Проверки
@@ -67,17 +67,15 @@ cargo test  --manifest-path src-tauri/Cargo.toml    # юнит-тесты Rust
 cargo check --manifest-path src-tauri/Cargo.toml    # Rust без фронтенда
 ```
 
-## Настройка Ely.by (обязательно для OAuth/парольного входа)
+## Вход через Ely.by
 
-1. Зарегистрируйте приложение на <https://account.ely.by/dev/applications/new> (тип **Website**), Redirect URI — `http://localhost:1420/ely/callback` (dev; для release — `http://localhost:8921/ely/callback` или своя переменная `ELYBY_REDIRECT_URI`).
-2. Положите `clientId`/`clientSecret` в файл `.env` в домашней папке лаунчера (`%APPDATA%\.ligone\.env`) либо задайте переменные окружения:
+Ely.by OAuth (и запасной вход по паролю) работают без какой-либо настройки: учётные данные приложения вшиты в сборку, а redirect URI (`http://localhost:8921/ely/callback` для release, `http://localhost:1420/ely/callback` для dev-запуска) зарегистрированы в приложении `ligone-launcher` на стороне Ely.by.
 
-   ```
-   ELYBY_CLIENT_ID=...
-   ELYBY_CLIENT_SECRET=...
-   ```
+Переопределение (необязательно), если хотите держать callback на нестандартном порту:
 
-   Переменные из окружения имеют приоритет над `.env`; секреты нигде не хардкодятся.
+```
+ELYBY_REDIRECT_URI=...   # свой redirect URI
+```
 
 Подробности OAuth-флоу и парольного входа — [docs/ely-by-oauth.md](docs/ely-by-oauth.md).
 
@@ -92,14 +90,14 @@ cargo check --manifest-path src-tauri/Cargo.toml    # Rust без фронтен
 | `instances/<id>/` | инстансы (`instance.json`, `mods/`, `saves/`, …) |
 | `versions/`, `libraries/`, `assets/` | общие кэши игры |
 | `runtime/` | рантаймы Java |
-| `cache/` | кэш манифестов версий |
+| `cache/` | кэш манифестов версий, jar установщика Forge |
 
 ## Структура проекта
 
 ```
 src/                 фронтенд: App.tsx, components/, lib/ (типизированные сервисы invoke, i18n)
 src-tauri/src/       бэкенд: lib.rs (точка входа), auth/, downloader.rs, launch.rs, jre.rs,
-                     instances.rs, content.rs, mcmeta.rs, fabric.rs, settings.rs, paths.rs
+                     instances.rs, content.rs, mcmeta.rs, fabric.rs, forge.rs, settings.rs, paths.rs
 docs/ely-by-oauth.md как устроен вход через Ely.by
 AGENTS.md            соглашения репозитория и подсказки для агентов
 ```

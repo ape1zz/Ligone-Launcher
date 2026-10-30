@@ -11,6 +11,7 @@ use sha1::{Digest, Sha1};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::fabric::{self, FabricProfile};
+use crate::forge;
 use crate::instances::{self, Instance, InstanceError, Loader};
 use crate::mcmeta;
 use crate::paths;
@@ -429,6 +430,24 @@ fn library_target(
     ))
 }
 
+fn file_plan_of(plan: LibraryPlan) -> FilePlan {
+    FilePlan {
+        url: plan.url,
+        dest: plan.dest,
+        sha1: plan.sha1,
+        size: plan.size,
+    }
+}
+
+/// Every library of one version JSON (vanilla, Fabric or a Forge overlay
+/// profile — all share the `Library` shape) as plain file plans.
+fn library_file_plans(json: &VersionJson, home: &Path) -> Vec<FilePlan> {
+    library_plans(json, home)
+        .into_iter()
+        .map(file_plan_of)
+        .collect()
+}
+
 fn build_plan(
     home: &Path,
     instance: &Instance,
@@ -450,15 +469,7 @@ fn build_plan(
         size: client.size.unwrap_or(0),
     };
 
-    let mut libraries: Vec<FilePlan> = library_plans(version_json, home)
-        .into_iter()
-        .map(|plan| FilePlan {
-            url: plan.url,
-            dest: plan.dest,
-            sha1: plan.sha1,
-            size: plan.size,
-        })
-        .collect();
+    let mut libraries = library_file_plans(version_json, home);
     if let Some(profile) = fabric_profile {
         for library in &profile.libraries {
             if let Some(plan) = fabric_file_plan(home, library) {
@@ -641,6 +652,7 @@ fn run_download(
 
     let fabric_profile = match instance.loader {
         Loader::Vanilla => None,
+        Loader::Forge => None,
         Loader::Fabric => {
             let loader_version = instance
                 .loader_version
@@ -655,7 +667,28 @@ fn run_download(
         }
     };
 
-    let plan = build_plan(&home, &instance, &version_json, fabric_profile.as_ref())?;
+    // For Forge the installer-generated profile is only read when it is
+    // already in the shared home caches (no installer run here); its
+    // libraries then join the plan and the early-completion check.
+    let forge_build = match instance.loader {
+        Loader::Forge => instance
+            .loader_version
+            .clone()
+            .ok_or_else(|| InstanceError::download("не указана версия Forge"))?,
+        _ => String::new(),
+    };
+    let forge_raw: Option<Vec<u8>> = match instance.loader {
+        Loader::Forge => forge::cached_profile(&home, &instance.version_id, &forge_build),
+        _ => None,
+    };
+    let forge_overlay: Option<VersionJson> = forge_raw
+        .as_deref()
+        .and_then(|bytes| parse_version_json(bytes).ok());
+
+    let mut plan = build_plan(&home, &instance, &version_json, fabric_profile.as_ref())?;
+    if let Some(overlay) = &forge_overlay {
+        plan.libraries.extend(library_file_plans(overlay, &home));
+    }
     let emitter = ProgressEmitter::new(app, id);
 
     if state.cancelled() {
@@ -690,9 +723,19 @@ fn run_download(
     };
 
     // Everything for this version is already on disk (caches are shared
-    // between instances): skip the download entirely.
-    if download_already_complete(&plan.jar, &plan.libraries, &asset_plans) {
+    // between instances): skip the download entirely. Forge instances also
+    // require the installer-generated profile to exist in the home cache.
+    let forge_ready = instance.loader != Loader::Forge || forge_overlay.is_some();
+    if forge_ready && download_already_complete(&plan.jar, &plan.libraries, &asset_plans) {
         instances::mark_downloaded(app, id, true)?;
+        if instance.loader == Loader::Forge {
+            let forge_path = dir.join("forge.json");
+            if !forge_path.is_file() {
+                if let Some(raw) = &forge_raw {
+                    fs::write(&forge_path, raw)?;
+                }
+            }
+        }
         if let Some((component, major)) = java_info {
             instances::set_java_info(app, id, &component, major)?;
         }
@@ -787,10 +830,45 @@ fn run_download(
         assets_bytes_total,
     );
 
+    if instance.loader == Loader::Forge {
+        run_forge_stage(app, state, &emitter, &home, &dir, &instance, &forge_build)?;
+    }
+
     instances::mark_downloaded(app, id, true)?;
     if let Some((component, major)) = java_info {
         instances::set_java_info(app, id, &component, major)?;
     }
+    Ok(())
+}
+
+/// Installs Forge into the shared launcher home (running the official
+/// installer when needed), stores its generated profile per instance and
+/// downloads/verifies the overlay libraries that have not landed on disk yet.
+fn run_forge_stage(
+    app: &AppHandle,
+    state: &InstanceState,
+    emitter: &ProgressEmitter,
+    home: &Path,
+    dir: &Path,
+    instance: &Instance,
+    build: &str,
+) -> Result<(), InstanceError> {
+    emitter.emit("forge", 0, 1, 0, 0);
+    let bytes = forge::ensure_profile(app, home, &instance.version_id, build)?;
+    let overlay = parse_version_json(&bytes)?;
+    fs::write(dir.join("forge.json"), &bytes)?;
+    let plans = library_file_plans(&overlay, home);
+    let total = plans.len() as u32;
+    let mut done: u32 = 0;
+    for lib in &plans {
+        if state.cancelled() {
+            return Err(InstanceError::Cancelled);
+        }
+        download_one(lib)?;
+        done += 1;
+        emitter.emit_throttled("forge", done, total, 0, 0);
+    }
+    emitter.emit("forge", total, total, 0, 0);
     Ok(())
 }
 

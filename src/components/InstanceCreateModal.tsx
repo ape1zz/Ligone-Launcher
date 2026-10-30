@@ -4,6 +4,7 @@ import {
   instances,
   instanceErrorMessage,
   type FabricLoaderVersion,
+  type ForgeLoaderVersion,
   type Instance,
   type Loader,
   type VersionInfo,
@@ -16,6 +17,30 @@ interface InstanceCreateModalProps {
 }
 
 type VersionFilter = "release" | "snapshot";
+
+/**
+ * Why the Forge button is blocked for a given version: `"old"` — no Forge
+ * existed before 1.13 (and previews); `"none"` — the year-based versions
+ * (26.1+) Forge simply never shipped; `null` — Forge is available.
+ */
+function forgeBlockReason(versionId: string | null, versions: VersionInfo[] | null): "old" | "none" | null {
+  if (versionId === null) {
+    return "old";
+  }
+  const version = versions?.find((entry) => entry.id === versionId);
+  if (!version || version.type !== "release") {
+    return "old";
+  }
+  const major = /^\d+(?=\.)/.exec(version.id);
+  if (major && Number(major[0]) >= 26) {
+    return "none";
+  }
+  const minor = /^1\.(\d+)/.exec(version.id);
+  if (!minor || Number(minor[1]) < 13) {
+    return "old";
+  }
+  return null;
+}
 
 export default function InstanceCreateModal({
   onClose,
@@ -33,6 +58,10 @@ export default function InstanceCreateModal({
     Record<string, FabricLoaderVersion[] | "error">
   >({});
   const [fabricChoice, setFabricChoice] = useState<string | null>(null);
+  const [forgeVersions, setForgeVersions] = useState<
+    Record<string, ForgeLoaderVersion[] | "error">
+  >({});
+  const [forgeChoice, setForgeChoice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -127,14 +156,56 @@ export default function InstanceCreateModal({
       fabricList[0])
     : undefined;
 
+  const forgeCanLoad = loader === "forge" && versionId !== null;
+  const forgeList = forgeCanLoad ? forgeVersions[versionId] : undefined;
+
+  useEffect(() => {
+    if (!forgeCanLoad) {
+      return;
+    }
+    if (forgeVersions[versionId] !== undefined) {
+      return;
+    }
+    let cancelled = false;
+    instances
+      .forgeLoaderVersions(versionId)
+      .then((loaded) => {
+        if (!cancelled) {
+          setForgeVersions((previous) => ({
+            ...previous,
+            [versionId]: loaded,
+          }));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setForgeVersions((previous) => ({
+            ...previous,
+            [versionId]: "error",
+          }));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [forgeCanLoad, versionId, forgeVersions]);
+
+  const selectedForgeVersion = Array.isArray(forgeList)
+    ? (forgeList.find((entry) => entry.version === forgeChoice) ?? forgeList[0])
+    : undefined;
+
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (versionId === null || busy) {
       return;
     }
-    const fabricVersion =
-      loader === "fabric" ? (selectedFabricVersion?.version ?? null) : null;
-    if (loader === "fabric" && fabricVersion === null) {
+    const loaderVersion =
+      loader === "fabric"
+        ? (selectedFabricVersion?.version ?? null)
+        : loader === "forge"
+          ? (selectedForgeVersion?.version ?? null)
+          : null;
+    if (loader !== "vanilla" && loaderVersion === null) {
       return;
     }
     setBusy(true);
@@ -144,7 +215,7 @@ export default function InstanceCreateModal({
         name: name.trim() === "" ? versionId : name.trim(),
         versionId,
         loader,
-        loaderVersion: fabricVersion,
+        loaderVersion,
       })
       .then(onCreated)
       .catch((error: unknown) => {
@@ -246,6 +317,12 @@ export default function InstanceCreateModal({
                   onClick={() => {
                     setVersionId(version.id);
                     setFabricChoice(null);
+                    setForgeChoice(null);
+                    if (forgeBlockReason(version.id, versions) !== null) {
+                      setLoader((current) =>
+                        current === "forge" ? "vanilla" : current,
+                      );
+                    }
                   }}
                 >
                   <span className="instcreate__version-id">{version.id}</span>
@@ -277,7 +354,60 @@ export default function InstanceCreateModal({
             >
               {t("create.loader_fabric")}
             </button>
+            <span
+              className="instcreate__loaderwrap"
+              data-blocked={forgeBlockReason(versionId, versions) !== null}
+            >
+              <button
+                className={`settings__segment-btn${loader === "forge" ? " settings__segment-btn--active" : ""}`}
+                type="button"
+                disabled={busy || forgeBlockReason(versionId, versions) !== null}
+                onClick={() => setLoader("forge")}
+              >
+                {t("create.loader_forge")}
+              </button>
+              {forgeBlockReason(versionId, versions) === "old" && (
+                <span className="instcreate__loaderhint" role="tooltip">
+                  {t("create.forge_unsupported")}
+                </span>
+              )}
+              {forgeBlockReason(versionId, versions) === "none" && (
+                <span className="instcreate__loaderhint" role="tooltip">
+                  {t("create.forge_none")}
+                </span>
+              )}
+            </span>
           </div>
+          {loader === "forge" && (
+            <div className="instcreate__fabric">
+              <p className="settings__label">{t("create.forge_version_label")}</p>
+              {forgeList === undefined ? (
+                <p className="instcreate__hint">{t("create.forge_loading")}</p>
+              ) : forgeList === "error" ? (
+                <p className="settings__notice">{t("create.forge_error")}</p>
+              ) : forgeList.length === 0 ? (
+                <p className="instcreate__hint">{t("create.forge_empty")}</p>
+              ) : (
+                <select
+                  className="settings__input"
+                  value={selectedForgeVersion?.version ?? ""}
+                  disabled={busy}
+                  onChange={(event) =>
+                    setForgeChoice(event.currentTarget.value)
+                  }
+                >
+                  {forgeList.map((entry) => (
+                    <option key={entry.version} value={entry.version}>
+                      {entry.version}
+                      {entry.recommended
+                        ? ` (${t("create.forge_recommended")})`
+                        : ""}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
           {loader === "fabric" && (
             <div className="instcreate__fabric">
               <p className="settings__label">{t("create.fabric_version_label")}</p>
@@ -317,7 +447,8 @@ export default function InstanceCreateModal({
             disabled={
               busy ||
               versionId === null ||
-              (loader === "fabric" && selectedFabricVersion === undefined)
+              (loader === "fabric" && selectedFabricVersion === undefined) ||
+              (loader === "forge" && selectedForgeVersion === undefined)
             }
           >
             {t("create.create")}

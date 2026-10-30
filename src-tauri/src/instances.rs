@@ -18,6 +18,7 @@ const FORBIDDEN_NAME_CHARS: [char; 9] = ['\\', '/', ':', '*', '?', '"', '<', '>'
 pub enum Loader {
     Vanilla,
     Fabric,
+    Forge,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -277,14 +278,20 @@ pub fn instance_create(
     }
     let loader_version = match loader {
         Loader::Vanilla => None,
-        Loader::Fabric => match loader_version.as_deref().map(str::trim) {
-            Some(version) if !version.is_empty() => Some(version.to_owned()),
-            _ => {
-                return Err(InstanceError::storage(
-                    "для Fabric необходимо указать версию загрузчика",
-                ))
+        Loader::Fabric | Loader::Forge => {
+            let label = match loader {
+                Loader::Fabric => "Fabric",
+                _ => "Forge",
+            };
+            match loader_version.as_deref().map(str::trim) {
+                Some(version) if !version.is_empty() => Some(version.to_owned()),
+                _ => {
+                    return Err(InstanceError::storage(format!(
+                        "для {label} необходимо указать версию загрузчика"
+                    )))
+                }
             }
-        },
+        }
     };
     let dir = instances_dir(&app)?;
     let instance = Instance {
